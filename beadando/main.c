@@ -7,17 +7,16 @@
 #include "image.h"
 #include "timer.h"
 
-static void print_usage(const char *prog) {
+void print_usage(const char *prog) {
     fprintf(stderr,
-        "Hasznalat:\n"
-        "  %s <width> <height> <max_iter> <c_real> <c_imag> <output_base> <csv_file>\n\n"
-        "Pelda:\n"
-        "  %s 1920 1080 500 -0.7 0.27015 output results.csv\n",
-        prog, prog
-    );
+            "Usage:\n"
+            "  %s <width> <height> <max_iter> <c_real> <c_imag> <output_base> <csv_file>\n\n"
+            "Example:\n"
+            "  %s 1920 1080 500 -0.7 0.27015 output results.csv\n",
+            prog, prog);
 }
 
-static int compare_buffers(const unsigned char *a, const unsigned char *b, size_t size) {
+int compare_buffers(const unsigned char *a, const unsigned char *b, size_t size) {
     for (size_t i = 0; i < size; ++i) {
         if (a[i] != b[i]) {
             return 0;
@@ -41,32 +40,38 @@ int main(int argc, char *argv[]) {
     const char *csv_file = argv[7];
 
     if (width <= 0 || height <= 0 || max_iter <= 0) {
-        fprintf(stderr, "Hiba: a szelesseg, magassag es max_iter pozitiv kell legyen.\n");
+        fprintf(stderr, "Error: width, height, and max_iter must be positive.\n");
         return 1;
     }
 
-    size_t image_size = (size_t)width * (size_t)height * 3;
+    Image cpu_image = {0};
+    Image ocl_image = {0};
 
-    unsigned char *cpu_image = (unsigned char *)malloc(image_size);
-    unsigned char *ocl_image = (unsigned char *)malloc(image_size);
-
-    if (!cpu_image || !ocl_image) {
-        fprintf(stderr, "Hiba: nem sikerult memoriat foglalni.\n");
-        free(cpu_image);
-        free(ocl_image);
+    if (create_image(&cpu_image, width, height) != 0 ||
+        create_image(&ocl_image, width, height) != 0) {
+        fprintf(stderr, "Error: memory allocation failed.\n");
+        destroy_image(&cpu_image);
+        destroy_image(&ocl_image);
         return 1;
     }
 
     double t0, t1;
-    double cpu_time_ms, opencl_time_ms;
+    double cpu_time_ms;
+    double opencl_time_ms;
+    double transfer_time_ms = -1.0;
 
     t0 = now_ms();
-    generate_julia_cpu(cpu_image, width, height, max_iter, c_real, c_imag);
+    generate_julia_cpu(&cpu_image, max_iter, c_real, c_imag);
     t1 = now_ms();
     cpu_time_ms = t1 - t0;
 
     t0 = now_ms();
-    int ocl_ok = generate_julia_opencl(ocl_image, width, height, max_iter, c_real, c_imag, "kernel.cl");
+    int ocl_ok = generate_julia_opencl(&ocl_image,
+                                       max_iter,
+                                       c_real,
+                                       c_imag,
+                                       "kernel.cl",
+                                       &transfer_time_ms);
     t1 = now_ms();
     opencl_time_ms = t1 - t0;
 
@@ -76,41 +81,49 @@ int main(int argc, char *argv[]) {
     snprintf(cpu_name, sizeof(cpu_name), "%s_cpu.ppm", output_base);
     snprintf(ocl_name, sizeof(ocl_name), "%s_opencl.ppm", output_base);
 
-    if (write_ppm(cpu_name, cpu_image, width, height) != 0) {
-        fprintf(stderr, "Hiba: nem sikerult menteni: %s\n", cpu_name);
+    if (write_ppm(cpu_name, &cpu_image) != 0) {
+        fprintf(stderr, "Error: failed to save file: %s\n", cpu_name);
     }
 
     if (ocl_ok) {
-        if (write_ppm(ocl_name, ocl_image, width, height) != 0) {
-            fprintf(stderr, "Hiba: nem sikerult menteni: %s\n", ocl_name);
+        if (write_ppm(ocl_name, &ocl_image) != 0) {
+            fprintf(stderr, "Error: failed to save file: %s\n", ocl_name);
         }
     }
 
-    printf("CPU ido: %.3f ms\n", cpu_time_ms);
+    printf("CPU time: %.3f ms\n", cpu_time_ms);
 
     if (ocl_ok) {
-        printf("OpenCL ido: %.3f ms\n", opencl_time_ms);
+        printf("OpenCL total time: %.3f ms\n", opencl_time_ms);
+        printf("OpenCL data transfer time (device -> host): %.3f ms\n", transfer_time_ms);
 
         if (opencl_time_ms > 0.0) {
-            printf("Gyorsulas: %.3fx\n", cpu_time_ms / opencl_time_ms);
+            printf("Speedup: %.3fx\n", cpu_time_ms / opencl_time_ms);
         }
 
-        if (compare_buffers(cpu_image, ocl_image, image_size)) {
-            printf("A CPU es OpenCL kimenet megegyezik.\n");
+        if (compare_buffers(cpu_image.data, ocl_image.data, get_image_size(&cpu_image))) {
+            printf("CPU and OpenCL outputs are identical.\n");
         } else {
-            printf("Figyelem: a CPU es OpenCL kimenet nem teljesen egyezik.\n");
+            printf("Warning: CPU and OpenCL outputs are not fully identical.\n");
         }
     } else {
-        printf("OpenCL futtatas sikertelen volt.\n");
+        printf("OpenCL execution failed.\n");
     }
 
-    if (append_result_csv(csv_file, width, height, max_iter, c_real, c_imag,
-                          cpu_time_ms, ocl_ok ? opencl_time_ms : -1.0) != 0) {
-        fprintf(stderr, "Hiba: nem sikerult a CSV fajlba irni.\n");
+    if (append_result_csv(csv_file,
+                          width,
+                          height,
+                          max_iter,
+                          c_real,
+                          c_imag,
+                          cpu_time_ms,
+                          ocl_ok ? opencl_time_ms : -1.0,
+                          ocl_ok ? transfer_time_ms : -1.0) != 0) {
+        fprintf(stderr, "Error: failed to write CSV file.\n");
     }
 
-    free(cpu_image);
-    free(ocl_image);
+    destroy_image(&cpu_image);
+    destroy_image(&ocl_image);
 
     return 0;
 }

@@ -5,18 +5,20 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "timer.h"
+
 #define CHECK_CL(err, msg) \
     do { \
         if ((err) != CL_SUCCESS) { \
-            fprintf(stderr, "%s hiba: %d\n", (msg), (err)); \
+            fprintf(stderr, "%s error: %d\n", (msg), (err)); \
             goto cleanup; \
         } \
     } while (0)
 
-static char *load_kernel_source(const char *filename, size_t *length) {
+char *load_kernel_source(const char *filename, size_t *length) {
     FILE *fp = fopen(filename, "rb");
     if (!fp) {
-        fprintf(stderr, "Nem sikerult megnyitni a kernel fajlt: %s\n", filename);
+        fprintf(stderr, "Error: failed to open kernel file: %s\n", filename);
         return NULL;
     }
 
@@ -26,14 +28,14 @@ static char *load_kernel_source(const char *filename, size_t *length) {
 
     if (size <= 0) {
         fclose(fp);
-        fprintf(stderr, "Ures vagy ervenytelen kernel fajl.\n");
+        fprintf(stderr, "Error: kernel file is empty or invalid.\n");
         return NULL;
     }
 
     char *source = (char *)malloc((size_t)size + 1);
     if (!source) {
         fclose(fp);
-        fprintf(stderr, "Nem sikerult memoriat foglalni a kernel forrashoz.\n");
+        fprintf(stderr, "Error: failed to allocate memory for kernel source.\n");
         return NULL;
     }
 
@@ -42,7 +44,7 @@ static char *load_kernel_source(const char *filename, size_t *length) {
 
     if (read_size != (size_t)size) {
         free(source);
-        fprintf(stderr, "Nem sikerult teljesen beolvasni a kernel fajlt.\n");
+        fprintf(stderr, "Error: failed to read kernel file completely.\n");
         return NULL;
     }
 
@@ -51,7 +53,7 @@ static char *load_kernel_source(const char *filename, size_t *length) {
     return source;
 }
 
-static void print_build_log(cl_program program, cl_device_id device) {
+void print_build_log(cl_program program, cl_device_id device) {
     size_t log_size = 0;
     clGetProgramBuildInfo(program, device, CL_PROGRAM_BUILD_LOG, 0, NULL, &log_size);
 
@@ -65,13 +67,60 @@ static void print_build_log(cl_program program, cl_device_id device) {
     }
 }
 
-int generate_julia_opencl(unsigned char *image,
-                          int width,
-                          int height,
+void print_device_info(cl_device_id device) {
+    char device_name[256] = {0};
+    char vendor_name[256] = {0};
+    char device_version[256] = {0};
+    char driver_version[256] = {0};
+
+    cl_uint compute_units = 0;
+    cl_uint clock_frequency = 0;
+    cl_ulong global_mem_size = 0;
+    cl_ulong local_mem_size = 0;
+    size_t max_work_group_size = 0;
+    size_t max_work_item_sizes[3] = {0, 0, 0};
+
+    clGetDeviceInfo(device, CL_DEVICE_NAME, sizeof(device_name), device_name, NULL);
+    clGetDeviceInfo(device, CL_DEVICE_VENDOR, sizeof(vendor_name), vendor_name, NULL);
+    clGetDeviceInfo(device, CL_DEVICE_VERSION, sizeof(device_version), device_version, NULL);
+    clGetDeviceInfo(device, CL_DRIVER_VERSION, sizeof(driver_version), driver_version, NULL);
+    clGetDeviceInfo(device, CL_DEVICE_MAX_COMPUTE_UNITS, sizeof(compute_units), &compute_units, NULL);
+    clGetDeviceInfo(device, CL_DEVICE_MAX_CLOCK_FREQUENCY, sizeof(clock_frequency), &clock_frequency, NULL);
+    clGetDeviceInfo(device, CL_DEVICE_GLOBAL_MEM_SIZE, sizeof(global_mem_size), &global_mem_size, NULL);
+    clGetDeviceInfo(device, CL_DEVICE_LOCAL_MEM_SIZE, sizeof(local_mem_size), &local_mem_size, NULL);
+    clGetDeviceInfo(device, CL_DEVICE_MAX_WORK_GROUP_SIZE, sizeof(max_work_group_size), &max_work_group_size, NULL);
+    clGetDeviceInfo(device, CL_DEVICE_MAX_WORK_ITEM_SIZES, sizeof(max_work_item_sizes), max_work_item_sizes, NULL);
+
+    printf("OpenCL device information:\n");
+    printf("  Device name           : %s\n", device_name);
+    printf("  Vendor                : %s\n", vendor_name);
+    printf("  Device version        : %s\n", device_version);
+    printf("  Driver version        : %s\n", driver_version);
+    printf("  Compute units         : %u\n", compute_units);
+    printf("  Max clock frequency   : %u MHz\n", clock_frequency);
+    printf("  Global memory         : %.2f MB\n", (double)global_mem_size / (1024.0 * 1024.0));
+    printf("  Local memory          : %.2f KB\n", (double)local_mem_size / 1024.0);
+    printf("  Max work-group size   : %zu\n", max_work_group_size);
+    printf("  Max work-item sizes   : %zu x %zu x %zu\n",
+           max_work_item_sizes[0],
+           max_work_item_sizes[1],
+           max_work_item_sizes[2]);
+}
+
+int generate_julia_opencl(Image *image,
                           int max_iter,
                           double c_real,
                           double c_imag,
-                          const char *kernel_file) {
+                          const char *kernel_file,
+                          double *transfer_time_ms) {
+    if (!image || !image->data || image->width <= 0 || image->height <= 0 || max_iter <= 0) {
+        return 0;
+    }
+
+    if (transfer_time_ms) {
+        *transfer_time_ms = -1.0;
+    }
+
     cl_int err = CL_SUCCESS;
     int result = 0;
 
@@ -85,8 +134,7 @@ int generate_julia_opencl(unsigned char *image,
 
     char *source = NULL;
     size_t source_len = 0;
-
-    size_t image_size = (size_t)width * (size_t)height * 3;
+    size_t image_size = get_image_size(image);
 
     source = load_kernel_source(kernel_file, &source_len);
     if (!source) {
@@ -98,10 +146,12 @@ int generate_julia_opencl(unsigned char *image,
 
     err = clGetDeviceIDs(platform, CL_DEVICE_TYPE_GPU, 1, &device, NULL);
     if (err != CL_SUCCESS) {
-        fprintf(stderr, "GPU nem elerheto, probalkozas CPU eszkozzel.\n");
+        fprintf(stderr, "Warning: GPU is not available, trying CPU device.\n");
         err = clGetDeviceIDs(platform, CL_DEVICE_TYPE_CPU, 1, &device, NULL);
         CHECK_CL(err, "clGetDeviceIDs");
     }
+
+    print_device_info(device);
 
     context = clCreateContext(NULL, 1, &device, NULL, NULL, &err);
     CHECK_CL(err, "clCreateContext");
@@ -118,7 +168,7 @@ int generate_julia_opencl(unsigned char *image,
 
     err = clBuildProgram(program, 1, &device, NULL, NULL, NULL);
     if (err != CL_SUCCESS) {
-        fprintf(stderr, "clBuildProgram hiba: %d\n", err);
+        fprintf(stderr, "clBuildProgram error: %d\n", err);
         print_build_log(program, device);
         goto cleanup;
     }
@@ -129,12 +179,17 @@ int generate_julia_opencl(unsigned char *image,
     image_buffer = clCreateBuffer(context, CL_MEM_WRITE_ONLY, image_size, NULL, &err);
     CHECK_CL(err, "clCreateBuffer");
 
+    int width = image->width;
+    int height = image->height;
+    float c_real_f = (float)c_real;
+    float c_imag_f = (float)c_imag;
+
     err  = clSetKernelArg(kernel, 0, sizeof(cl_mem), &image_buffer);
     err |= clSetKernelArg(kernel, 1, sizeof(int), &width);
     err |= clSetKernelArg(kernel, 2, sizeof(int), &height);
     err |= clSetKernelArg(kernel, 3, sizeof(int), &max_iter);
-    err |= clSetKernelArg(kernel, 4, sizeof(float), &(float){(float)c_real});
-    err |= clSetKernelArg(kernel, 5, sizeof(float), &(float){(float)c_imag});
+    err |= clSetKernelArg(kernel, 4, sizeof(float), &c_real_f);
+    err |= clSetKernelArg(kernel, 5, sizeof(float), &c_imag_f);
     CHECK_CL(err, "clSetKernelArg");
 
     size_t global_size[2] = { (size_t)width, (size_t)height };
@@ -145,18 +200,34 @@ int generate_julia_opencl(unsigned char *image,
     err = clFinish(queue);
     CHECK_CL(err, "clFinish");
 
-    err = clEnqueueReadBuffer(queue, image_buffer, CL_TRUE, 0, image_size, image, 0, NULL, NULL);
+    double transfer_start_ms = now_ms();
+    err = clEnqueueReadBuffer(queue, image_buffer, CL_TRUE, 0, image_size, image->data, 0, NULL, NULL);
+    double transfer_end_ms = now_ms();
     CHECK_CL(err, "clEnqueueReadBuffer");
+
+    if (transfer_time_ms) {
+        *transfer_time_ms = transfer_end_ms - transfer_start_ms;
+    }
 
     result = 1;
 
 cleanup:
-    if (image_buffer) clReleaseMemObject(image_buffer);
-    if (kernel) clReleaseKernel(kernel);
-    if (program) clReleaseProgram(program);
-    if (queue) clReleaseCommandQueue(queue);
-    if (context) clReleaseContext(context);
-    free(source);
+    if (image_buffer) {
+        clReleaseMemObject(image_buffer);
+    }
+    if (kernel) {
+        clReleaseKernel(kernel);
+    }
+    if (program) {
+        clReleaseProgram(program);
+    }
+    if (queue) {
+        clReleaseCommandQueue(queue);
+    }
+    if (context) {
+        clReleaseContext(context);
+    }
 
+    free(source);
     return result;
 }

@@ -10,6 +10,7 @@ int append_result_csv(const char *filename,
                       double c_real,
                       double c_imag,
                       double cpu_time_ms,
-                      double opencl_time_ms);
+                      double opencl_time_ms,
+                      double transfer_time_ms);
 
 #endif

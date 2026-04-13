@@ -16,7 +16,8 @@ int append_result_csv(const char *filename,
                       double c_real,
                       double c_imag,
                       double cpu_time_ms,
-                      double opencl_time_ms) {
+                      double opencl_time_ms,
+                      double transfer_time_ms) {
     int write_header = 0;
 
     FILE *test = fopen(filename, "r");
@@ -32,7 +33,7 @@ int append_result_csv(const char *filename,
     }
 
     if (write_header) {
-        fprintf(fp, "width,height,max_iter,c_real,c_imag,cpu_ms,opencl_ms,speedup\n");
+        fprintf(fp, "width,height,max_iter,c_real,c_imag,cpu_ms,opencl_ms,transfer_ms,speedup\n");
     }
 
     double speedup = -1.0;
@@ -40,9 +41,9 @@ int append_result_csv(const char *filename,
         speedup = cpu_time_ms / opencl_time_ms;
     }
 
-    fprintf(fp, "%d,%d,%d,%.10f,%.10f,%.6f,%.6f,%.6f\n",
+    fprintf(fp, "%d,%d,%d,%.10f,%.10f,%.6f,%.6f,%.6f,%.6f\n",
             width, height, max_iter, c_real, c_imag,
-            cpu_time_ms, opencl_time_ms, speedup);
+            cpu_time_ms, opencl_time_ms, transfer_time_ms, speedup);
 
     fclose(fp);
     return 0;
