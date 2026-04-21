@@ -1,8 +1,10 @@
 #ifndef TIMER_H
 #define TIMER_H
 
+//Aktuális idő lekérdezése milliszekundumban.
 double now_ms(void);
 
+//Mérési eredmények hozzáfűzése CSV fájlhoz.
 int append_result_csv(const char *filename,
                       int width,
                       int height,

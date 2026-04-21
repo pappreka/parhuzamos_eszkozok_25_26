@@ -7,6 +7,7 @@
 #include "image.h"
 #include "timer.h"
 
+//Használati útmutató kiírása, ha a programot hibás paraméterekkel indítják.
 void print_usage(const char *prog) {
     fprintf(stderr,
             "Usage:\n"
@@ -16,6 +17,7 @@ void print_usage(const char *prog) {
             prog, prog);
 }
 
+//Két memória-blokk összehasonlítása byte-onként.
 int compare_buffers(const unsigned char *a, const unsigned char *b, size_t size) {
     for (size_t i = 0; i < size; ++i) {
         if (a[i] != b[i]) {
@@ -26,11 +28,13 @@ int compare_buffers(const unsigned char *a, const unsigned char *b, size_t size)
 }
 
 int main(int argc, char *argv[]) {
+    //Ellenőrizzük, hogy a felhasználó megfelelő számú paramétert adott-e meg.
     if (argc != 8) {
         print_usage(argv[0]);
         return 1;
     }
 
+    //Parancssori argumentumok feldolgozása.
     int width = atoi(argv[1]);
     int height = atoi(argv[2]);
     int max_iter = atoi(argv[3]);
@@ -39,14 +43,20 @@ int main(int argc, char *argv[]) {
     const char *output_base = argv[6];
     const char *csv_file = argv[7];
 
+    //Alapvető bemeneti ellenőrzés.
     if (width <= 0 || height <= 0 || max_iter <= 0) {
         fprintf(stderr, "Error: width, height, and max_iter must be positive.\n");
         return 1;
     }
 
+    /* Két képstruktúra létrehozása:
+       cpu_image: a soros CPU verzió eredménye
+       ocl_image: az OpenCL verzió eredménye
+    */
     Image cpu_image = {0};
     Image ocl_image = {0};
 
+    //Memória lefoglalása a két kép számára.
     if (create_image(&cpu_image, width, height) != 0 ||
         create_image(&ocl_image, width, height) != 0) {
         fprintf(stderr, "Error: memory allocation failed.\n");
@@ -55,16 +65,19 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
+    //Időméréshez használt változók.
     double t0, t1;
     double cpu_time_ms;
     double opencl_time_ms;
     double transfer_time_ms = -1.0;
 
+    //CPU-alapú Julia-halmaz generálás időméréssel.
     t0 = now_ms();
     generate_julia_cpu(&cpu_image, max_iter, c_real, c_imag);
     t1 = now_ms();
     cpu_time_ms = t1 - t0;
 
+    //OpenCL-alapú Julia-halmaz generálás időméréssel.
     t0 = now_ms();
     int ocl_ok = generate_julia_opencl(&ocl_image,
                                        max_iter,
@@ -75,22 +88,26 @@ int main(int argc, char *argv[]) {
     t1 = now_ms();
     opencl_time_ms = t1 - t0;
 
+    //Kimeneti fájlnevek összeállítása.
     char cpu_name[512];
     char ocl_name[512];
 
     snprintf(cpu_name, sizeof(cpu_name), "%s_cpu.ppm", output_base);
     snprintf(ocl_name, sizeof(ocl_name), "%s_opencl.ppm", output_base);
 
+    //CPU eredmény mentése PPM fájlba.
     if (write_ppm(cpu_name, &cpu_image) != 0) {
         fprintf(stderr, "Error: failed to save file: %s\n", cpu_name);
     }
 
+    //OpenCL eredmény mentése csak akkor, ha a futás sikeres volt.
     if (ocl_ok) {
         if (write_ppm(ocl_name, &ocl_image) != 0) {
             fprintf(stderr, "Error: failed to save file: %s\n", ocl_name);
         }
     }
 
+    //CPU futási idő kiírása.
     printf("CPU time: %.3f ms\n", cpu_time_ms);
 
     if (ocl_ok) {
@@ -101,15 +118,18 @@ int main(int argc, char *argv[]) {
             printf("Speedup: %.3fx\n", cpu_time_ms / opencl_time_ms);
         }
 
+        //CPU és OpenCL kimenetek összehasonlítása.
         if (compare_buffers(cpu_image.data, ocl_image.data, get_image_size(&cpu_image))) {
             printf("CPU and OpenCL outputs are identical.\n");
         } else {
             printf("Warning: CPU and OpenCL outputs are not fully identical.\n");
         }
     } else {
+        //Ha az OpenCL futás hibás volt.
         printf("OpenCL execution failed.\n");
     }
 
+    //Mérési eredmények mentése CSV fájlba.
     if (append_result_csv(csv_file,
                           width,
                           height,
@@ -122,6 +142,7 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "Error: failed to write CSV file.\n");
     }
 
+    //Memória felszabadítása
     destroy_image(&cpu_image);
     destroy_image(&ocl_image);
 
